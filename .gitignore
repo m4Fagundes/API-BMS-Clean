@@ -1,0 +1,48 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+
+# Virtual environment
+venv/
+env/
+
+# Config / credentials (caso existam)
+*.env
+*.env.*
+secrets.json
+
+# Logs
+*.log
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# FastAPI / Uvicorn
+*.pid
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Compiled / build
+dist/
+build/
+*.spec
+
+# Ngrok
+ngrok.exe
+ngrok.yml
+
+# PowerShell scripts gerados localmente
+*.ps1
+
+# PyInstaller output (se usar)
+*.manifest
+*.spec
+
+# Byte-compiled
+*.pyc
