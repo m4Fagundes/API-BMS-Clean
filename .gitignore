@@ -33,9 +33,6 @@ dist/
 build/
 *.spec
 
-# Ngrok
-ngrok.exe
-ngrok.yml
 
 # PowerShell scripts gerados localmente
 *.ps1
