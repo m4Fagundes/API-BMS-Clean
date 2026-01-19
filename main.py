@@ -3,6 +3,7 @@ import io
 import base64
 import logging
 import pdfplumber
+from collections import defaultdict
 
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.responses import StreamingResponse
@@ -22,13 +23,11 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# --- Configuração ---
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("BMS_API")
 
 app = FastAPI(title="BMS: PDF & Complex Excel Generator", version="5.0.0")
 
-# --- Segurança ---
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
 REAL_KEY = "minha-chave-secreta-123" 
@@ -69,6 +68,17 @@ class ProjectReportRequest(BaseModel):
     Focus_Category: Optional[str] = "General"
     Systems: List[SystemData] = []
 
+class BMSPointData(BaseModel):
+    AssetTag: str
+    PointName: str
+    PointType: str
+    Logic: str
+    IsIntegration: bool = False
+
+class BMSPointsRequest(BaseModel):
+    Points: List[BMSPointData]
+    Report_Title: Optional[str] = "BMS Points List"
+
 # ==========================================
 #           SERVIÇOS (LÓGICA)
 # ==========================================
@@ -91,17 +101,13 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
     ws = wb.active
     ws.title = "Detailed Points List"
 
-    # --- Estilos ---
-    # Cores baseadas na imagem (Azul Escuro para Header Principal, Cinza/Azul para Sub-header)
-    COLOR_HEADER_MAIN = "2C3E50"  # Azul escuro
-    COLOR_HEADER_SUB = "5D6D7E"   # Cinza azulado
+    COLOR_HEADER_MAIN = "2C3E50"
+    COLOR_HEADER_SUB = "5D6D7E"
     COLOR_TEXT_WHITE = "FFFFFF"
     
-    # Bordas
     thin_border = Side(border_style="thin", color="000000")
     border_all = Border(left=thin_border, right=thin_border, top=thin_border, bottom=thin_border)
 
-    # Fontes e Preenchimentos
     font_main_header = Font(bold=True, color=COLOR_TEXT_WHITE, size=11)
     fill_main_header = PatternFill(start_color=COLOR_HEADER_MAIN, end_color=COLOR_HEADER_MAIN, fill_type="solid")
     
@@ -111,21 +117,17 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
     align_top_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
     align_center = Alignment(horizontal="center", vertical="center")
 
-    # 1. Cabeçalho Principal (Linha 1)
     headers = ["System", "Tag", "Description", "Status", "Points List Details", "", ""] # Colunas extras vazias para o merge
     ws.append(headers)
 
-    # Formatar Cabeçalho Principal
     for col_idx, cell in enumerate(ws[1], start=1):
         cell.font = font_main_header
         cell.fill = fill_main_header
         cell.alignment = align_top_left
         cell.border = border_all
     
-    # Mesclar as colunas E, F, G para o título "Points List Details"
     ws.merge_cells("E1:G1")
 
-    # 2. Iterar e Preencher Dados
     current_row = 2
     systems_list = data.Systems if data.Systems else []
 
@@ -133,38 +135,28 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
         sys_name = system.System_Name
         
         for eq in system.Equipment:
-            # Calcular quantas linhas esse equipamento vai ocupar
-            # 1 linha para o cabeçalho dos pontos (Descriptor/Signal/Notes) + N linhas de pontos
-            # Se não tiver pontos, ocupa pelo menos 1 linha
             num_points = len(eq.Points)
             rows_needed = num_points + 1 if num_points > 0 else 1
             
             end_row = current_row + rows_needed - 1
 
-            # --- Preencher Colunas da Esquerda (Equipamento) ---
-            # Escrevemos apenas na primeira célula do bloco, depois mesclamos
             ws.cell(row=current_row, column=1, value=sys_name).alignment = align_top_left
             ws.cell(row=current_row, column=2, value=eq.Tag).alignment = align_top_left
             ws.cell(row=current_row, column=3, value=eq.Description).alignment = align_top_left
             ws.cell(row=current_row, column=4, value=eq.Status).alignment = align_top_left
 
-            # Aplicar bordas nas células da esquerda (loop para garantir borda na área mesclada)
             for r in range(current_row, end_row + 1):
                 for c in range(1, 5): # Colunas A a D
                     ws.cell(row=r, column=c).border = border_all
 
-            # Mesclar verticalmente as colunas A, B, C, D
             if rows_needed > 1:
                 ws.merge_cells(start_row=current_row, start_column=1, end_row=end_row, end_column=1) # System
                 ws.merge_cells(start_row=current_row, start_column=2, end_row=end_row, end_column=2) # Tag
                 ws.merge_cells(start_row=current_row, start_column=3, end_row=end_row, end_column=3) # Description
                 ws.merge_cells(start_row=current_row, start_column=4, end_row=end_row, end_column=4) # Status
 
-            # --- Preencher Colunas da Direita (Pontos) ---
             
-            # Se houver pontos, cria o sub-cabeçalho e lista os pontos
             if num_points > 0:
-                # Sub-cabeçalho na primeira linha do bloco
                 sub_headers = ["Descriptor", "Signal", "Notes"]
                 for i, text in enumerate(sub_headers):
                     c = ws.cell(row=current_row, column=5+i, value=text)
@@ -173,7 +165,6 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
                     c.border = border_all
                     c.alignment = align_top_left
 
-                # Listar os pontos nas linhas seguintes
                 point_row_idx = current_row + 1
                 for pt in eq.Points:
                     ws.cell(row=point_row_idx, column=5, value=pt.Descriptor).border = border_all
@@ -181,16 +172,13 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
                     ws.cell(row=point_row_idx, column=7, value=pt.Notes).border = border_all
                     point_row_idx += 1
             else:
-                # Se não houver pontos, deixa células vazias com borda ou mensagem
                 ws.cell(row=current_row, column=5, value="No Points").border = border_all
                 ws.cell(row=current_row, column=6, value="-").border = border_all
                 ws.cell(row=current_row, column=7, value="-").border = border_all
 
-            # Avançar o cursor de linha
             current_row += rows_needed
 
-    # 3. Ajuste de Largura das Colunas
-    column_widths = [15, 15, 30, 10, 30, 10, 30] # Larguras estimadas para A, B, C, D, E, F, G
+    column_widths = [15, 15, 30, 10, 30, 10, 30]
     for i, width in enumerate(column_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
 
@@ -199,7 +187,131 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
     buffer.seek(0)
     return buffer
 
-# --- Serviço de PDF (Mantido igual) ---
+def service_generate_bms_points_excel(data: BMSPointsRequest) -> io.BytesIO:
+    """
+    Gera Excel estruturado a partir de lista de pontos BMS.
+    Agrupa por AssetTag e organiza em tabela com merged cells.
+    """
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BMS Points List"
+
+    # --- Estilos ---
+    COLOR_HEADER_MAIN = "1F4E79"
+    COLOR_HEADER_SUB = "2E75B6"
+    COLOR_INTEGRATION = "FFC000"
+    COLOR_AI = "C6EFCE"
+    COLOR_AO = "FFEB9C"
+    COLOR_DI = "BDD7EE"
+    COLOR_DO = "F8CBAD"
+    COLOR_TEXT_WHITE = "FFFFFF"
+    
+    # Bordas
+    thin_border = Side(border_style="thin", color="000000")
+    border_all = Border(left=thin_border, right=thin_border, top=thin_border, bottom=thin_border)
+
+    # Fontes e Preenchimentos
+    font_main_header = Font(bold=True, color=COLOR_TEXT_WHITE, size=12)
+    fill_main_header = PatternFill(start_color=COLOR_HEADER_MAIN, end_color=COLOR_HEADER_MAIN, fill_type="solid")
+    
+    font_sub_header = Font(bold=True, color=COLOR_TEXT_WHITE, size=10)
+    fill_sub_header = PatternFill(start_color=COLOR_HEADER_SUB, end_color=COLOR_HEADER_SUB, fill_type="solid")
+
+    fill_integration = PatternFill(start_color=COLOR_INTEGRATION, end_color=COLOR_INTEGRATION, fill_type="solid")
+    fill_ai = PatternFill(start_color=COLOR_AI, end_color=COLOR_AI, fill_type="solid")
+    fill_ao = PatternFill(start_color=COLOR_AO, end_color=COLOR_AO, fill_type="solid")
+    fill_di = PatternFill(start_color=COLOR_DI, end_color=COLOR_DI, fill_type="solid")
+    fill_do = PatternFill(start_color=COLOR_DO, end_color=COLOR_DO, fill_type="solid")
+
+    align_top_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    align_center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    headers = ["Asset Tag", "Point Details", "", "", ""]
+    ws.append(headers)
+
+    for col_idx, cell in enumerate(ws[1], start=1):
+        cell.font = font_main_header
+        cell.fill = fill_main_header
+        cell.alignment = align_center
+        cell.border = border_all
+    
+    ws.merge_cells("B1:E1")
+
+    points_by_asset = defaultdict(list)
+    
+    for point in data.Points:
+        points_by_asset[point.AssetTag].append(point)
+
+    current_row = 2
+
+    for asset_tag, points in points_by_asset.items():
+        num_points = len(points)
+        rows_needed = num_points + 1
+        end_row = current_row + rows_needed - 1
+
+        ws.cell(row=current_row, column=1, value=asset_tag).alignment = align_top_left
+        ws.cell(row=current_row, column=1).font = Font(bold=True, size=10)
+
+        for r in range(current_row, end_row + 1):
+            ws.cell(row=r, column=1).border = border_all
+
+        if rows_needed > 1:
+            ws.merge_cells(start_row=current_row, start_column=1, end_row=end_row, end_column=1)
+
+        sub_headers = ["Point Name", "Point Type", "Logic", "Integration"]
+        for i, text in enumerate(sub_headers):
+            c = ws.cell(row=current_row, column=2+i, value=text)
+            c.font = font_sub_header
+            c.fill = fill_sub_header
+            c.border = border_all
+            c.alignment = align_center
+
+        point_row_idx = current_row + 1
+        for pt in points:
+            cell_name = ws.cell(row=point_row_idx, column=2, value=pt.PointName)
+            cell_name.border = border_all
+            cell_name.alignment = align_top_left
+            
+            cell_type = ws.cell(row=point_row_idx, column=3, value=pt.PointType)
+            cell_type.border = border_all
+            cell_type.alignment = align_center
+            
+            if pt.PointType == "AI":
+                cell_type.fill = fill_ai
+            elif pt.PointType == "AO":
+                cell_type.fill = fill_ao
+            elif pt.PointType == "DI":
+                cell_type.fill = fill_di
+            elif pt.PointType == "DO":
+                cell_type.fill = fill_do
+            elif "Integration" in pt.PointType:
+                cell_type.fill = fill_integration
+            
+            cell_logic = ws.cell(row=point_row_idx, column=4, value=pt.Logic)
+            cell_logic.border = border_all
+            cell_logic.alignment = align_top_left
+            
+            cell_integration = ws.cell(row=point_row_idx, column=5, value="Yes" if pt.IsIntegration else "No")
+            cell_integration.border = border_all
+            cell_integration.alignment = align_center
+            if pt.IsIntegration:
+                cell_integration.fill = fill_integration
+            
+            point_row_idx += 1
+
+        current_row += rows_needed
+
+    column_widths = [18, 35, 18, 70, 12]
+    for i, width in enumerate(column_widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = width
+
+    ws.freeze_panes = "A2"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer
+
 def service_generate_pdf(data: ProjectReportRequest) -> io.BytesIO:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=12*mm, leftMargin=12*mm, topMargin=12*mm, bottomMargin=12*mm)
@@ -304,7 +416,6 @@ async def generate_pdf_endpoint(data: ProjectReportRequest):
 @app.post("/generate-excel", dependencies=[Depends(verify_key)])
 async def generate_excel_endpoint(data: ProjectReportRequest):
     try:
-        # Chama o NOVO serviço estruturado
         excel_file = service_generate_points_excel_structured(data)
         
         safe_name = "".join([c for c in (data.Focus_Category or "Report") if c.isalnum() or c in (' ','-','_')]).strip()
@@ -316,6 +427,34 @@ async def generate_excel_endpoint(data: ProjectReportRequest):
         )
     except Exception as e:
         logger.error(f"Erro Excel: {e}")
+        raise HTTPException(500, str(e))
+
+@app.post("/generate-bms-points-excel", dependencies=[Depends(verify_key)])
+async def generate_bms_points_excel_endpoint(data: BMSPointsRequest):
+    """
+    Gera Excel estruturado a partir de lista de pontos BMS.
+    
+    Aceita JSON com formato:
+    {
+        "Points": [
+            {"AssetTag": "CCV-FCU-1-4", "PointName": "Valve Position Feedback", "PointType": "AI", "Logic": "...", "IsIntegration": false},
+            ...
+        ],
+        "Report_Title": "BMS Points List" (opcional)
+    }
+    """
+    try:
+        excel_file = service_generate_bms_points_excel(data)
+        
+        safe_name = "".join([c for c in (data.Report_Title or "BMS_Points") if c.isalnum() or c in (' ','-','_')]).strip()
+        filename = f"{safe_name}.xlsx"
+        return StreamingResponse(
+            excel_file, 
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", 
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+    except Exception as e:
+        logger.error(f"Erro BMS Excel: {e}")
         raise HTTPException(500, str(e))
 
 if __name__ == "__main__":
