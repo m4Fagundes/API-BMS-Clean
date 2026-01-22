@@ -52,12 +52,15 @@ class SectionRequest(BaseModel):
 class PointData(BaseModel):
     Descriptor: str
     Signal_Type: str
+    Sensor_Hardware: Optional[str] = ""
     Notes: Optional[str] = ""
 
 class EquipmentData(BaseModel):
     Tag: str
     Description: Optional[str] = ""
     Status: Optional[str] = ""
+    Switchboard_Ref: Optional[str] = ""
+    Location: Optional[str] = ""
     Points: List[PointData] = []
 
 class SystemData(BaseModel):
@@ -96,6 +99,7 @@ def extract_text_pypdf(pdf_bytes, limit=None, maintain_layout=True):
 def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.BytesIO:
     """
     Gera Excel com células mescladas (Merged Cells) similar à imagem fornecida.
+    Inclui campos: System, Tag, Description, Status, Switchboard_Ref, Location e Points Details.
     """
     wb = Workbook()
     ws = wb.active
@@ -117,7 +121,8 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
     align_top_left = Alignment(horizontal="left", vertical="top", wrap_text=True)
     align_center = Alignment(horizontal="center", vertical="center")
 
-    headers = ["System", "Tag", "Description", "Status", "Points List Details", "", ""] # Colunas extras vazias para o merge
+    # Colunas principais: System, Tag, Description, Status, Switchboard_Ref, Location, Points List Details (4 colunas)
+    headers = ["System", "Tag", "Description", "Status", "Switchboard Ref", "Location", "Points List Details", "", "", ""]
     ws.append(headers)
 
     for col_idx, cell in enumerate(ws[1], start=1):
@@ -126,7 +131,8 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
         cell.alignment = align_top_left
         cell.border = border_all
     
-    ws.merge_cells("E1:G1")
+    # Merge das colunas de Points Details (G1:J1)
+    ws.merge_cells("G1:J1")
 
     current_row = 2
     systems_list = data.Systems if data.Systems else []
@@ -144,9 +150,11 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
             ws.cell(row=current_row, column=2, value=eq.Tag).alignment = align_top_left
             ws.cell(row=current_row, column=3, value=eq.Description).alignment = align_top_left
             ws.cell(row=current_row, column=4, value=eq.Status).alignment = align_top_left
+            ws.cell(row=current_row, column=5, value=eq.Switchboard_Ref).alignment = align_top_left
+            ws.cell(row=current_row, column=6, value=eq.Location).alignment = align_top_left
 
             for r in range(current_row, end_row + 1):
-                for c in range(1, 5): # Colunas A a D
+                for c in range(1, 7): # Colunas A a F
                     ws.cell(row=r, column=c).border = border_all
 
             if rows_needed > 1:
@@ -154,12 +162,14 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
                 ws.merge_cells(start_row=current_row, start_column=2, end_row=end_row, end_column=2) # Tag
                 ws.merge_cells(start_row=current_row, start_column=3, end_row=end_row, end_column=3) # Description
                 ws.merge_cells(start_row=current_row, start_column=4, end_row=end_row, end_column=4) # Status
+                ws.merge_cells(start_row=current_row, start_column=5, end_row=end_row, end_column=5) # Switchboard_Ref
+                ws.merge_cells(start_row=current_row, start_column=6, end_row=end_row, end_column=6) # Location
 
             
             if num_points > 0:
-                sub_headers = ["Descriptor", "Signal", "Notes"]
+                sub_headers = ["Descriptor", "Signal Type", "Sensor Hardware", "Notes"]
                 for i, text in enumerate(sub_headers):
-                    c = ws.cell(row=current_row, column=5+i, value=text)
+                    c = ws.cell(row=current_row, column=7+i, value=text)
                     c.font = font_sub_header
                     c.fill = fill_sub_header
                     c.border = border_all
@@ -167,18 +177,20 @@ def service_generate_points_excel_structured(data: ProjectReportRequest) -> io.B
 
                 point_row_idx = current_row + 1
                 for pt in eq.Points:
-                    ws.cell(row=point_row_idx, column=5, value=pt.Descriptor).border = border_all
-                    ws.cell(row=point_row_idx, column=6, value=pt.Signal_Type).border = border_all
-                    ws.cell(row=point_row_idx, column=7, value=pt.Notes).border = border_all
+                    ws.cell(row=point_row_idx, column=7, value=pt.Descriptor).border = border_all
+                    ws.cell(row=point_row_idx, column=8, value=pt.Signal_Type).border = border_all
+                    ws.cell(row=point_row_idx, column=9, value=pt.Sensor_Hardware).border = border_all
+                    ws.cell(row=point_row_idx, column=10, value=pt.Notes).border = border_all
                     point_row_idx += 1
             else:
-                ws.cell(row=current_row, column=5, value="No Points").border = border_all
-                ws.cell(row=current_row, column=6, value="-").border = border_all
-                ws.cell(row=current_row, column=7, value="-").border = border_all
+                ws.cell(row=current_row, column=7, value="No Points").border = border_all
+                ws.cell(row=current_row, column=8, value="-").border = border_all
+                ws.cell(row=current_row, column=9, value="-").border = border_all
+                ws.cell(row=current_row, column=10, value="-").border = border_all
 
             current_row += rows_needed
 
-    column_widths = [15, 15, 30, 10, 30, 10, 30]
+    column_widths = [15, 15, 30, 10, 18, 20, 30, 12, 20, 30]
     for i, width in enumerate(column_widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
 
