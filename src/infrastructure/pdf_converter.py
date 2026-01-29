@@ -3,8 +3,9 @@ Infraestrutura para conversão de PDF em imagens.
 """
 import io
 import base64
-import fitz  # PyMuPDF
-from typing import Optional
+import struct
+import fitz
+from typing import Optional, Generator
 from dataclasses import dataclass
 
 
@@ -13,6 +14,15 @@ class PageImage:
     """Representa uma página convertida em imagem."""
     page_number: int
     image_base64: str
+    width: int
+    height: int
+
+
+@dataclass
+class PageImageBytes:
+    """Representa uma página convertida em imagem (bytes raw)."""
+    page_number: int
+    image_bytes: bytes
     width: int
     height: int
 
@@ -129,6 +139,90 @@ class PdfConverter:
             
         finally:
             doc.close()
+    
+    @staticmethod
+    def pages_to_images_bytes(
+        pdf_bytes: bytes,
+        pages: Optional[list[int]] = None,
+        dpi: int = 150
+    ) -> Generator[PageImageBytes, None, None]:
+        """
+        Generator que converte páginas do PDF em imagens PNG (bytes raw).
+        
+        Processa página por página sem acumular em memória.
+        Ideal para streaming e transferência entre APIs.
+        
+        Args:
+            pdf_bytes: Bytes do arquivo PDF.
+            pages: Lista de números de página (1-indexed). None = todas.
+            dpi: Resolução das imagens (default: 150).
+            
+        Yields:
+            PageImageBytes com os bytes da imagem PNG.
+        """
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        try:
+            # Define quais páginas processar
+            if pages is None:
+                page_indices = range(len(doc))
+            else:
+                page_indices = [p - 1 for p in pages if 0 < p <= len(doc)]
+            
+            zoom = dpi / 72
+            matrix = fitz.Matrix(zoom, zoom)
+            
+            for page_num in page_indices:
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=matrix)
+                
+                img_bytes = pix.tobytes("png")
+                
+                yield PageImageBytes(
+                    page_number=page_num + 1,
+                    image_bytes=img_bytes,
+                    width=pix.width,
+                    height=pix.height
+                )
+                
+        finally:
+            doc.close()
+    
+    @staticmethod
+    def pages_to_stream(
+        pdf_bytes: bytes,
+        pages: Optional[list[int]] = None,
+        dpi: int = 150
+    ) -> Generator[bytes, None, None]:
+        """
+        Generator que produz stream binário das imagens.
+        
+        Formato do stream por imagem:
+        - 4 bytes: número da página (uint32 big-endian)
+        - 4 bytes: largura (uint32 big-endian)
+        - 4 bytes: altura (uint32 big-endian)
+        - 4 bytes: tamanho dos bytes da imagem (uint32 big-endian)
+        - N bytes: bytes da imagem PNG
+        
+        Args:
+            pdf_bytes: Bytes do arquivo PDF.
+            pages: Lista de números de página (1-indexed). None = todas.
+            dpi: Resolução das imagens (default: 150).
+            
+        Yields:
+            Chunks de bytes para streaming.
+        """
+        for img in PdfConverter.pages_to_images_bytes(pdf_bytes, pages, dpi):
+            # Header: page_number, width, height, size (cada um 4 bytes)
+            header = struct.pack(
+                ">IIII",
+                img.page_number,
+                img.width,
+                img.height,
+                len(img.image_bytes)
+            )
+            yield header
+            yield img.image_bytes
     
     @staticmethod
     def _find_section_pages(
