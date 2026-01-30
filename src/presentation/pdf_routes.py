@@ -5,6 +5,7 @@ import base64
 import logging
 
 from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, Query
+from pydantic import BaseModel
 
 from src.core.security import verify_api_key
 from src.domain.models import (
@@ -105,6 +106,83 @@ async def section_to_images(req: SectionToImagesRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Erro ao converter seção em imagens: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PagesToBase64Request(BaseModel):
+    """Request para converter páginas do PDF em imagens Base64."""
+    arquivo_base64: str
+    pages: list[int] | None = None  # None = todas as páginas
+    dpi: int = 150
+    include_data_uri: bool = True
+
+
+@router.post("/pages-to-base64", dependencies=[Depends(verify_api_key)])
+async def pages_to_base64(req: PagesToBase64Request):
+    """
+    Converte páginas do PDF para Base64 - **OTIMIZADO PARA POWER AUTOMATE**.
+    
+    Recebe JSON com PDF em Base64 e retorna array de imagens Base64.
+    Formato idêntico aos outros endpoints da API.
+    
+    **Formato de Entrada (JSON Body):**
+    ```json
+    {
+        "arquivo_base64": "JVBERi0xLjQK...",
+        "pages": [1, 2, 3],
+        "dpi": 150,
+        "include_data_uri": true
+    }
+    ```
+    
+    **Formato de Resposta:**
+    ```json
+    {
+        "total_pages": 3,
+        "images": [
+            {"page": 1, "base64": "data:image/png;base64,iVBORw0KGgo..."},
+            {"page": 2, "base64": "data:image/png;base64,iVBORw0KGgo..."},
+            {"page": 3, "base64": "data:image/png;base64,iVBORw0KGgo..."}
+        ]
+    }
+    ```
+    
+    Args:
+        arquivo_base64: PDF em Base64
+        pages: Lista de páginas específicas (ex: [1,2,5]). Null = todas
+        dpi: Resolução das imagens (default: 150)
+        include_data_uri: Se true, inclui prefixo "data:image/png;base64," (default: true)
+    
+    Returns:
+        JSON com total_pages e array de imagens em Base64
+    """
+    try:
+        # Decodifica o PDF de Base64
+        pdf_bytes = base64.b64decode(req.arquivo_base64)
+        
+        # Converte páginas em imagens
+        images = PdfConverter.pages_to_images(
+            pdf_bytes,
+            pages=req.pages,
+            dpi=req.dpi
+        )
+        
+        # Prepara prefixo Data URI se solicitado
+        prefix = "data:image/png;base64," if req.include_data_uri else ""
+        
+        # Retorna JSON otimizado para Power Automate
+        return {
+            "total_pages": len(images),
+            "images": [
+                {
+                    "page": img.page_number,
+                    "base64": f"{prefix}{img.image_base64}"
+                }
+                for img in images
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Erro ao converter páginas para Base64: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
