@@ -44,6 +44,12 @@ def create_app() -> FastAPI:
     # Registra rotas legadas (retrocompatibilidade)
     _register_legacy_routes(app)
     
+    # Rota raiz para redirecionar para docs
+    from fastapi.responses import RedirectResponse
+    @app.get("/", include_in_schema=False)
+    async def root():
+        return RedirectResponse(url="/docs")
+    
     logger.info(f"Aplicação {settings.app_name} v{settings.app_version} inicializada.")
     
     return app
