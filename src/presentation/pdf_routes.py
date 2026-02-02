@@ -4,7 +4,7 @@ Rotas relacionadas a operações com PDF.
 import base64
 import logging
 
-from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, Query
+from fastapi import APIRouter, HTTPException, Depends, File, UploadFile, Query, Request
 from pydantic import BaseModel
 
 from src.core.security import verify_api_key
@@ -246,4 +246,124 @@ async def pages_to_images(
         raise
     except Exception as e:
         logger.error(f"Erro ao converter páginas em imagens: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/split-pdf-to-images", dependencies=[Depends(verify_api_key)])
+async def split_pdf_to_images(
+    request: Request,
+    page: int = Query(1, description="Número da página a processar (1-indexed). Use com 'total_only=true' primeiro para saber quantas páginas existem."),
+    dpi: int = Query(150, description="Resolução das imagens (DPI)"),
+    total_only: bool = Query(False, description="Se true, retorna apenas o total de páginas sem processar imagens")
+):
+    """
+    🚀 **STREAM FRIENDLY + PAGINADO** - Converte PDF em imagens UMA POR VEZ.
+    
+    Resolve o limite de 100MB do Power Automate processando uma página por chamada.
+    
+    **FLUXO NO POWER AUTOMATE (2 etapas):**
+    
+    **Etapa 1 - Descobrir total de páginas:**
+    - URI: /pdf/split-pdf-to-images?total_only=true
+    - Retorna: {"total_pages": 27, "page": null, "image_base64": null}
+    
+    **Etapa 2 - Loop para cada página:**
+    - URI: /pdf/split-pdf-to-images?page=1 (depois 2, 3, 4...)
+    - Retorna: {"total_pages": 27, "page": 1, "image_base64": "data:image/png;base64,..."}
+    
+    **Configuração HTTP:**
+    - Method: POST
+    - Headers: Content-Type: application/octet-stream
+    - Body: File Content (binário ou base64)
+    - Settings: Chunking: ON
+    
+    Args:
+        page: Número da página a processar (default: 1)
+        dpi: Resolução das imagens (default: 150)
+        total_only: Se true, retorna apenas contagem de páginas
+    
+    Returns:
+        JSON com total_pages, page e image_base64 (null se total_only=true)
+    """
+    try:
+        # Lê o corpo da requisição (pode ser raw binary ou base64)
+        raw_body = await request.body()
+        
+        if not raw_body:
+            raise HTTPException(
+                status_code=400, 
+                detail="Nenhum arquivo recebido. Envie o PDF no body da requisição."
+            )
+        
+        # Detecta automaticamente o formato: raw binary ou base64
+        if raw_body[:4] == b'%PDF':
+            pdf_bytes = raw_body
+            logger.info(f"PDF recebido como raw binary: {len(pdf_bytes)} bytes")
+        elif raw_body[:6] == b'JVBERi':
+            try:
+                pdf_bytes = base64.b64decode(raw_body)
+                logger.info(f"PDF recebido como Base64, decodificado: {len(pdf_bytes)} bytes")
+            except Exception as decode_error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Falha ao decodificar Base64: {str(decode_error)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=400, 
+                detail="O arquivo recebido não é um PDF válido. Esperado: raw binary (%PDF) ou Base64 (JVBERi...)."
+            )
+        
+        # Valida que após decodificação é um PDF válido
+        if not pdf_bytes[:4] == b'%PDF':
+            raise HTTPException(
+                status_code=400, 
+                detail="Após decodificação, o arquivo não é um PDF válido."
+            )
+        
+        # Obtém total de páginas
+        total_pages = PdfConverter.get_page_count(pdf_bytes)
+        logger.info(f"PDF tem {total_pages} páginas")
+        
+        # Se só quer o total, retorna sem processar imagens
+        if total_only:
+            return {
+                "total_pages": total_pages,
+                "page": None,
+                "image_base64": None
+            }
+        
+        # Valida número da página
+        if page < 1 or page > total_pages:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Página {page} inválida. O PDF tem {total_pages} páginas (1 a {total_pages})."
+            )
+        
+        # Processa apenas a página solicitada
+        images = PdfConverter.pages_to_images(
+            pdf_bytes,
+            pages=[page],
+            dpi=dpi
+        )
+        
+        if not images:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Falha ao processar página {page}"
+            )
+        
+        img = images[0]
+        logger.info(f"Página {page}/{total_pages} processada")
+        
+        # Retorna JSON com UMA imagem
+        return {
+            "total_pages": total_pages,
+            "page": page,
+            "image_base64": f"data:image/png;base64,{img.image_base64}"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao converter PDF stream em imagens: {e}")
         raise HTTPException(status_code=500, detail=str(e))

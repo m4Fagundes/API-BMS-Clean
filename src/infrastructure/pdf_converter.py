@@ -34,6 +34,23 @@ class PdfConverter:
     DEFAULT_FORMAT = "png"
     
     @staticmethod
+    def get_page_count(pdf_bytes: bytes) -> int:
+        """
+        Retorna o número total de páginas do PDF.
+        
+        Args:
+            pdf_bytes: Bytes do arquivo PDF.
+            
+        Returns:
+            Número total de páginas.
+        """
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        try:
+            return len(doc)
+        finally:
+            doc.close()
+    
+    @staticmethod
     def section_to_images(
         pdf_bytes: bytes,
         start_marker: str,
