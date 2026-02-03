@@ -17,6 +17,7 @@ from src.domain.models import (
 )
 from src.infrastructure.pdf_extractor import PdfExtractor
 from src.infrastructure.pdf_converter import PdfConverter
+from src.infrastructure.pdf_cache import pdf_cache
 
 
 logger = logging.getLogger("BMS_API")
@@ -367,3 +368,220 @@ async def split_pdf_to_images(
     except Exception as e:
         logger.error(f"Erro ao converter PDF stream em imagens: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# CACHE SESSION ENDPOINTS - Upload único + extração de páginas sob demanda
+# ============================================================================
+
+class UploadResponse(BaseModel):
+    """Resposta do upload de PDF para cache."""
+    session_id: str
+    total_pages: int
+    expires_in_seconds: int
+
+
+@router.post("/upload", dependencies=[Depends(verify_api_key)], response_model=UploadResponse)
+async def upload_pdf_to_cache(request: Request):
+    """
+    📦 **UPLOAD ÚNICO** - Armazena PDF no cache para extração de páginas sob demanda.
+    
+    Evita reenviar o mesmo PDF várias vezes. Faça upload uma vez e extraia
+    páginas individuais usando o session_id retornado.
+    
+    **Fluxo no Power Automate:**
+    1. `POST /pdf/upload` → Recebe session_id
+    2. `GET /pdf/page/{session_id}/1` → Página 1
+    3. `GET /pdf/page/{session_id}/2` → Página 2
+    4. ... e assim por diante
+    
+    **Configuração HTTP:**
+    - Method: POST
+    - Headers: Content-Type: application/octet-stream
+    - Body: PDF binário ou Base64
+    
+    Returns:
+        session_id: UUID para usar nos próximos requests
+        total_pages: Número total de páginas do PDF
+        expires_in_seconds: Tempo até expirar (30 min, renovado a cada acesso)
+    """
+    try:
+        # Lê o corpo da requisição
+        raw_body = await request.body()
+        
+        if not raw_body:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum arquivo recebido. Envie o PDF no body da requisição."
+            )
+        
+        # Detecta formato: raw binary ou base64
+        if raw_body[:4] == b'%PDF':
+            pdf_bytes = raw_body
+            logger.info(f"Upload: PDF recebido como raw binary ({len(pdf_bytes)} bytes)")
+        elif raw_body[:6] == b'JVBERi':
+            try:
+                pdf_bytes = base64.b64decode(raw_body)
+                logger.info(f"Upload: PDF recebido como Base64, decodificado ({len(pdf_bytes)} bytes)")
+            except Exception as decode_error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Falha ao decodificar Base64: {str(decode_error)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="O arquivo recebido não é um PDF válido. Esperado: raw binary (%PDF) ou Base64 (JVBERi...)."
+            )
+        
+        # Valida PDF
+        if not pdf_bytes[:4] == b'%PDF':
+            raise HTTPException(
+                status_code=400,
+                detail="Após decodificação, o arquivo não é um PDF válido."
+            )
+        
+        # Obtém total de páginas
+        total_pages = PdfConverter.get_page_count(pdf_bytes)
+        
+        # Armazena no cache
+        try:
+            session_id = pdf_cache.store(pdf_bytes, total_pages)
+        except ValueError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        
+        return UploadResponse(
+            session_id=session_id,
+            total_pages=total_pages,
+            expires_in_seconds=pdf_cache.DEFAULT_TTL_SECONDS
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao fazer upload do PDF: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class PageResponse(BaseModel):
+    """Resposta da extração de uma página."""
+    page: int
+    total_pages: int
+    image_base64: str
+
+
+@router.get("/page/{session_id}/{page}", dependencies=[Depends(verify_api_key)], response_model=PageResponse)
+async def get_page_from_cache(
+    session_id: str,
+    page: int,
+    dpi: int = Query(150, description="Resolução da imagem (DPI)")
+):
+    """
+    📄 **EXTRAI PÁGINA** - Retorna uma página específica do PDF em cache.
+    
+    Use o session_id recebido no `/pdf/upload` para extrair páginas
+    individuais sem reenviar o PDF.
+    
+    **Exemplo:**
+    ```
+    GET /pdf/page/abc123-uuid/1?dpi=150
+    GET /pdf/page/abc123-uuid/2?dpi=150
+    ```
+    
+    Args:
+        session_id: UUID da sessão (de /pdf/upload)
+        page: Número da página (1-indexed)
+        dpi: Resolução da imagem (default: 150)
+    
+    Returns:
+        page: Número da página
+        total_pages: Total de páginas no PDF
+        image_base64: Imagem PNG em base64 com prefixo data URI
+    """
+    try:
+        # Busca no cache
+        entry = pdf_cache.get(session_id)
+        
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Sessão '{session_id}' não encontrada ou expirada. Faça upload novamente com POST /pdf/upload."
+            )
+        
+        # Valida número da página
+        if page < 1 or page > entry.total_pages:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Página {page} inválida. O PDF tem {entry.total_pages} páginas (1 a {entry.total_pages})."
+            )
+        
+        # Extrai a página
+        images = PdfConverter.pages_to_images(
+            entry.pdf_bytes,
+            pages=[page],
+            dpi=dpi
+        )
+        
+        if not images:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Falha ao processar página {page}"
+            )
+        
+        img = images[0]
+        logger.info(f"Página {page}/{entry.total_pages} extraída (session={session_id[:8]}...)")
+        
+        return PageResponse(
+            page=page,
+            total_pages=entry.total_pages,
+            image_base64=f"data:image/png;base64,{img.image_base64}"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao extrair página do cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cache/stats", dependencies=[Depends(verify_api_key)])
+async def get_cache_stats():
+    """
+    📊 **ESTATÍSTICAS** - Retorna informações sobre o cache de PDFs.
+    
+    Returns:
+        active_sessions: Número de sessões ativas
+        total_size_mb: Tamanho total em MB
+        max_size_mb: Limite máximo em MB
+        ttl_seconds: Tempo de vida das sessões
+    """
+    return pdf_cache.get_stats()
+
+
+@router.delete("/cache/{session_id}", dependencies=[Depends(verify_api_key)])
+async def delete_cache_session(session_id: str):
+    """
+    🗑️ **LIMPAR SESSÃO** - Remove uma sessão do cache manualmente.
+    
+    Útil para liberar memória após processar todas as páginas necessárias.
+    
+    Args:
+        session_id: UUID da sessão a remover
+    
+    Returns:
+        success: True se removido
+        message: Mensagem de confirmação
+    """
+    deleted = pdf_cache.delete(session_id)
+    
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Sessão '{session_id}' não encontrada."
+        )
+    
+    return {
+        "success": True,
+        "message": f"Sessão {session_id} removida do cache."
+    }
+
