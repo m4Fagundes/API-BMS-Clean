@@ -585,3 +585,183 @@ async def delete_cache_session(session_id: str):
         "message": f"Sessão {session_id} removida do cache."
     }
 
+
+# ============================================================================
+# PAGE CLASSIFICATION ENDPOINTS - Identificar P&IDs vs Layouts
+# ============================================================================
+
+class ClassifyPagesResponse(BaseModel):
+    """Resposta da classificação de páginas."""
+    total_pages: int
+    index_page: int | None
+    pid_pages: list[int]
+    layout_pages: list[int]
+    unknown_pages: list[int]
+    method_used: str
+    processing_time_ms: float
+
+
+@router.post("/classify-pages", dependencies=[Depends(verify_api_key)], response_model=ClassifyPagesResponse)
+async def classify_pages(request: Request):
+    """
+    🔍 **CLASSIFICAR PÁGINAS** - Identifica quais páginas são P&IDs vs Layouts.
+    
+    Usa 3 níveis de classificação:
+    1. **OCR no Índice**: Procura "Drawing Index" e lê nomes dos desenhos
+    2. **OCR no Título**: Lê título/rodapé de cada página
+    3. **Análise Visual**: Detecta páginas coloridas (Layouts) vs P&B (P&IDs)
+    
+    **Uso no Power Automate:**
+    1. Envia PDF → Recebe lista de páginas P&ID
+    2. Loop apenas nas páginas retornadas em `pid_pages`
+    3. Envia cada página para análise com IA
+    
+    **Configuração HTTP:**
+    - Method: POST
+    - Headers: Content-Type: application/octet-stream
+    - Body: PDF binário ou Base64
+    
+    Returns:
+        total_pages: Número total de páginas
+        index_page: Página do índice (se encontrado)
+        pid_pages: Lista de páginas P&ID (1-indexed)
+        layout_pages: Lista de páginas Layout (1-indexed)
+        unknown_pages: Páginas não classificadas
+        method_used: "index", "title" ou "visual"
+        processing_time_ms: Tempo de processamento
+    """
+    from src.infrastructure.pdf_page_classifier import PdfPageClassifier
+    
+    try:
+        # Lê o corpo da requisição
+        raw_body = await request.body()
+        
+        if not raw_body:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum arquivo recebido. Envie o PDF no body da requisição."
+            )
+        
+        # Detecta formato: raw binary ou base64
+        if raw_body[:4] == b'%PDF':
+            pdf_bytes = raw_body
+            logger.info(f"Classificação: PDF recebido como raw binary ({len(pdf_bytes)} bytes)")
+        elif raw_body[:6] == b'JVBERi':
+            try:
+                pdf_bytes = base64.b64decode(raw_body)
+                logger.info(f"Classificação: PDF recebido como Base64 ({len(pdf_bytes)} bytes)")
+            except Exception as decode_error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Falha ao decodificar Base64: {str(decode_error)}"
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="O arquivo recebido não é um PDF válido."
+            )
+        
+        # Classifica as páginas
+        result = PdfPageClassifier.classify_pdf(pdf_bytes)
+        
+        logger.info(
+            f"Classificação concluída: {len(result.pid_pages)} P&IDs, "
+            f"{len(result.layout_pages)} Layouts, método={result.method_used}, "
+            f"tempo={result.processing_time_ms:.0f}ms"
+        )
+        
+        return ClassifyPagesResponse(
+            total_pages=result.total_pages,
+            index_page=result.index_page,
+            pid_pages=result.pid_pages,
+            layout_pages=result.layout_pages,
+            unknown_pages=result.unknown_pages,
+            method_used=result.method_used,
+            processing_time_ms=result.processing_time_ms
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao classificar páginas: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload-and-classify", dependencies=[Depends(verify_api_key)])
+async def upload_and_classify(request: Request):
+    """
+    📦🔍 **UPLOAD + CLASSIFICAR** - Armazena PDF no cache e classifica páginas.
+    
+    Combina /pdf/upload com /pdf/classify-pages em uma única chamada.
+    Retorna session_id + lista de páginas P&ID para processar.
+    
+    **Fluxo otimizado no Power Automate:**
+    1. `POST /pdf/upload-and-classify` → session_id + pid_pages
+    2. Loop em pid_pages: `GET /pdf/page/{session_id}/{page}`
+    3. Envia cada imagem para IA
+    
+    Returns:
+        session_id: UUID para extrair páginas
+        total_pages: Total de páginas no PDF
+        pid_pages: Lista de páginas P&ID
+        layout_pages: Lista de páginas Layout
+        method_used: Método de classificação usado
+        expires_in_seconds: Tempo até expirar
+    """
+    from src.infrastructure.pdf_page_classifier import PdfPageClassifier
+    
+    try:
+        # Lê o corpo da requisição
+        raw_body = await request.body()
+        
+        if not raw_body:
+            raise HTTPException(
+                status_code=400,
+                detail="Nenhum arquivo recebido."
+            )
+        
+        # Detecta formato
+        if raw_body[:4] == b'%PDF':
+            pdf_bytes = raw_body
+        elif raw_body[:6] == b'JVBERi':
+            pdf_bytes = base64.b64decode(raw_body)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="O arquivo recebido não é um PDF válido."
+            )
+        
+        # Obtém total de páginas
+        total_pages = PdfConverter.get_page_count(pdf_bytes)
+        
+        # Armazena no cache
+        try:
+            session_id = pdf_cache.store(pdf_bytes, total_pages)
+        except ValueError as e:
+            raise HTTPException(status_code=413, detail=str(e))
+        
+        # Classifica as páginas
+        result = PdfPageClassifier.classify_pdf(pdf_bytes)
+        
+        logger.info(
+            f"Upload+Classificação: session={session_id[:8]}..., "
+            f"{len(result.pid_pages)} P&IDs encontrados"
+        )
+        
+        return {
+            "session_id": session_id,
+            "total_pages": result.total_pages,
+            "index_page": result.index_page,
+            "pid_pages": result.pid_pages,
+            "layout_pages": result.layout_pages,
+            "unknown_pages": result.unknown_pages,
+            "method_used": result.method_used,
+            "processing_time_ms": result.processing_time_ms,
+            "expires_in_seconds": pdf_cache.DEFAULT_TTL_SECONDS
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro no upload+classificação: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

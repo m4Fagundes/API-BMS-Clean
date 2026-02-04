@@ -43,3 +43,7 @@ build/
 
 # Byte-compiled
 *.pyc
+
+.gemini/
+.agent/
+.planning/
