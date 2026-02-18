@@ -474,7 +474,11 @@ class PageResponse(BaseModel):
 async def get_page_from_cache(
     session_id: str,
     page: int,
-    dpi: int = Query(150, description="Resolução da imagem (DPI)")
+    dpi: int = Query(150, description="Resolução de renderização (DPI)"),
+    format: str = Query("png", description="Formato: 'png' ou 'jpeg'"),
+    quality: int = Query(85, description="Qualidade JPEG 1-100 (ignorado para PNG)"),
+    grayscale: bool = Query(False, description="Converter para escala de cinza"),
+    max_dimension: int = Query(0, description="Dimensão máxima em pixels (0 = sem limite). Ex: 4096 para IA.")
 ):
     """
     📄 **EXTRAI PÁGINA** - Retorna uma página específica do PDF em cache.
@@ -485,62 +489,157 @@ async def get_page_from_cache(
     **Exemplo:**
     ```
     GET /pdf/page/abc123-uuid/1?dpi=150
-    GET /pdf/page/abc123-uuid/2?dpi=150
+    GET /pdf/page/abc123-uuid/1?dpi=300&format=jpeg&quality=85&max_dimension=4096
     ```
     
     Args:
         session_id: UUID da sessão (de /pdf/upload)
         page: Número da página (1-indexed)
-        dpi: Resolução da imagem (default: 150)
+        dpi: Resolução de renderização (default: 150)
+        format: Formato: "png" ou "jpeg" (default: "png")
+        quality: Qualidade JPEG 1-100 (default: 85)
+        grayscale: Escala de cinza (default: false)
+        max_dimension: Dimensão máxima em pixels (default: 0 = sem limite)
     
     Returns:
         page: Número da página
         total_pages: Total de páginas no PDF
-        image_base64: Imagem PNG em base64 com prefixo data URI
+        image_base64: Imagem em base64 com prefixo data URI
     """
     try:
-        # Busca no cache
+        logger.info(f"[DEBUG] get_page_from_cache: session={session_id}, page={page}, dpi={dpi}, format={format}, max_dim={max_dimension}")
+        
         entry = pdf_cache.get(session_id)
         
         if entry is None:
             raise HTTPException(
                 status_code=404,
-                detail=f"Sessão '{session_id}' não encontrada ou expirada. Faça upload novamente com POST /pdf/upload."
+                detail=f"Sessão '{session_id}' não encontrada ou expirada."
             )
         
-        # Valida número da página
         if page < 1 or page > entry.total_pages:
             raise HTTPException(
                 status_code=400,
-                detail=f"Página {page} inválida. O PDF tem {entry.total_pages} páginas (1 a {entry.total_pages})."
+                detail=f"Página {page} inválida. O PDF tem {entry.total_pages} páginas."
             )
         
-        # Extrai a página
+        img_format = format.lower()
+        if img_format not in ("png", "jpeg"):
+            raise HTTPException(status_code=400, detail="Formato inválido. Use 'png' ou 'jpeg'.")
+        
         images = PdfConverter.pages_to_images(
             entry.pdf_bytes,
             pages=[page],
-            dpi=dpi
+            dpi=dpi,
+            img_format=img_format,
+            quality=quality,
+            grayscale=grayscale,
+            max_dimension=max_dimension
         )
         
         if not images:
+            logger.error(f"[DEBUG] Nenhuma imagem retornada para page={page}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Falha ao processar página {page}"
             )
         
         img = images[0]
+        mime_type = "image/jpeg" if img_format == "jpeg" else "image/png"
+        logger.info(f"[DEBUG] Imagem extraída: page_number={img.page_number}, dimensions={img.width}x{img.height}, format={img_format}")
         logger.info(f"Página {page}/{entry.total_pages} extraída (session={session_id[:8]}...)")
         
         return PageResponse(
             page=page,
             total_pages=entry.total_pages,
-            image_base64=f"data:image/png;base64,{img.image_base64}"
+            image_base64=f"data:{mime_type};base64,{img.image_base64}"
         )
     
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Erro ao extrair página do cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/page-sections/{session_id}/{page}", dependencies=[Depends(verify_api_key)])
+async def get_page_sections(
+    session_id: str,
+    page: int,
+    rows: int = 2,
+    cols: int = 2,
+    dpi: int = 200
+):
+    """
+    Divide uma página do PDF em seções (grid) com alta resolução.
+    
+    Útil para enviar para IA quando a página inteira fica grande demais.
+    Por padrão divide em 4 seções (2x2).
+    
+    Args:
+        session_id: ID da sessão do cache
+        page: Número da página (1-indexed)
+        rows: Linhas do grid (default: 2)
+        cols: Colunas do grid (default: 2)
+        dpi: Resolução (default: 200)
+    
+    Returns:
+        page: Número da página original
+        total_pages: Total de páginas no PDF
+        sections: Lista de seções com image_base64
+        grid: Configuração do grid usada
+    """
+    try:
+        entry = pdf_cache.get(session_id)
+        
+        if entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Sessão '{session_id}' não encontrada ou expirada."
+            )
+        
+        if page < 1 or page > entry.total_pages:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Página {page} inválida. O PDF tem {entry.total_pages} páginas."
+            )
+        
+        # Limita grid para evitar abuso
+        rows = min(max(rows, 1), 4)
+        cols = min(max(cols, 1), 4)
+        
+        sections = PdfConverter.page_to_sections(
+            entry.pdf_bytes,
+            page=page,
+            rows=rows,
+            cols=cols,
+            dpi=dpi
+        )
+        
+        logger.info(
+            f"Página {page}/{entry.total_pages} dividida em {rows}x{cols} seções "
+            f"(session={session_id[:8]}...)"
+        )
+        
+        return {
+            "page": page,
+            "total_pages": entry.total_pages,
+            "grid": {"rows": rows, "cols": cols, "total_sections": rows * cols},
+            "sections": [
+                {
+                    "section": s.page_number,
+                    "image_base64": f"data:image/png;base64,{s.image_base64}",
+                    "width": s.width,
+                    "height": s.height
+                }
+                for s in sections
+            ]
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro ao dividir página em seções: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

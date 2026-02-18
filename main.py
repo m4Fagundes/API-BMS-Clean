@@ -38,6 +38,16 @@ def create_app() -> FastAPI:
         description="API para extração de texto de PDFs e geração de relatórios Excel/PDF estruturados."
     )
     
+    # Adiciona CORS para permitir acesso do frontend de teste
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Permite todas as origens (apenas para desenvolvimento)
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    
     # Registra os routers
     _register_routers(app)
     

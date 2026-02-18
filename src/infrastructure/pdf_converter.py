@@ -112,23 +112,35 @@ class PdfConverter:
     def pages_to_images(
         pdf_bytes: bytes,
         pages: Optional[list[int]] = None,
-        dpi: int = 150
+        dpi: int = 150,
+        img_format: str = "png",
+        quality: int = 85,
+        grayscale: bool = False,
+        max_dimension: int = 0
     ) -> list[PageImage]:
         """
-        Converte páginas específicas do PDF em imagens PNG.
+        Converte páginas específicas do PDF em imagens com processamento inteligente.
+        
+        Pipeline: Render alta res → Sharpen → Resize → Compress
         
         Args:
             pdf_bytes: Bytes do arquivo PDF.
             pages: Lista de números de página (1-indexed). None = todas.
-            dpi: Resolução das imagens (default: 150).
+            dpi: Resolução de renderização (default: 150).
+            img_format: Formato: "png" ou "jpeg" (default: "png").
+            quality: Qualidade JPEG 1-100 (default: 85).
+            grayscale: Converte para escala de cinza (default: False).
+            max_dimension: Dimensão máxima em pixels (0 = sem limite).
+                          Redimensiona mantendo proporção. Útil para IA.
             
         Returns:
             Lista de PageImage com as imagens em base64.
         """
+        from PIL import Image, ImageFilter
+        
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         
         try:
-            # Define quais páginas processar
             if pages is None:
                 page_indices = range(len(doc))
             else:
@@ -142,17 +154,132 @@ class PdfConverter:
                 page = doc[page_num]
                 pix = page.get_pixmap(matrix=matrix)
                 
-                img_bytes = pix.tobytes("png")
+                # Converte pixmap para PIL Image
+                img_data = pix.tobytes("png")
+                pil_img = Image.open(io.BytesIO(img_data))
+                
+                # Converte para grayscale se solicitado
+                if grayscale:
+                    pil_img = pil_img.convert("L")
+                
+                # Pipeline de processamento para IA
+                if max_dimension > 0:
+                    w, h = pil_img.size
+                    max_side = max(w, h)
+                    
+                    if max_side > max_dimension:
+                        # Aplica sharpening ANTES de redimensionar
+                        # para preservar texto e linhas finas
+                        pil_img = pil_img.filter(ImageFilter.SHARPEN)
+                        
+                        # Redimensiona mantendo proporção com Lanczos (melhor para texto)
+                        ratio = max_dimension / max_side
+                        new_w = int(w * ratio)
+                        new_h = int(h * ratio)
+                        pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+                        
+                        # Aplica UnsharpMask após resize para recuperar nitidez
+                        # radius=2, percent=150, threshold=3
+                        pil_img = pil_img.filter(
+                            ImageFilter.UnsharpMask(radius=2, percent=150, threshold=3)
+                        )
+                
+                # Salva no formato desejado
+                buffer = io.BytesIO()
+                if img_format.lower() == "jpeg":
+                    if pil_img.mode == "RGBA":
+                        pil_img = pil_img.convert("RGB")
+                    pil_img.save(buffer, format="JPEG", quality=quality, optimize=True)
+                else:
+                    pil_img.save(buffer, format="PNG", optimize=True)
+                
+                img_bytes = buffer.getvalue()
                 img_base64 = base64.b64encode(img_bytes).decode("utf-8")
                 
                 images.append(PageImage(
                     page_number=page_num + 1,
                     image_base64=img_base64,
-                    width=pix.width,
-                    height=pix.height
+                    width=pil_img.width,
+                    height=pil_img.height
                 ))
             
             return images
+            
+        finally:
+            doc.close()
+    
+    @staticmethod
+    def page_to_sections(
+        pdf_bytes: bytes,
+        page: int,
+        rows: int = 2,
+        cols: int = 2,
+        dpi: int = 200
+    ) -> list[PageImage]:
+        """
+        Divide uma página do PDF em seções (grid) com alta resolução.
+        
+        Args:
+            pdf_bytes: Bytes do arquivo PDF.
+            page: Número da página (1-indexed).
+            rows: Número de linhas do grid (default: 2).
+            cols: Número de colunas do grid (default: 2).
+            dpi: Resolução das imagens (default: 200).
+            
+        Returns:
+            Lista de PageImage, uma para cada seção.
+        """
+        from PIL import Image
+        
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        
+        try:
+            page_idx = page - 1
+            if page_idx < 0 or page_idx >= len(doc):
+                return []
+            
+            pdf_page = doc[page_idx]
+            zoom = dpi / 72
+            matrix = fitz.Matrix(zoom, zoom)
+            
+            # Renderiza a página inteira em alta resolução
+            full_pix = pdf_page.get_pixmap(matrix=matrix)
+            
+            # Converte para PIL para crop confiável
+            full_img = Image.open(io.BytesIO(full_pix.tobytes("png")))
+            full_w, full_h = full_img.size
+            
+            section_w = full_w // cols
+            section_h = full_h // rows
+            
+            sections = []
+            section_num = 0
+            
+            for r in range(rows):
+                for c in range(cols):
+                    section_num += 1
+                    
+                    x0 = c * section_w
+                    y0 = r * section_h
+                    x1 = full_w if c == cols - 1 else (c + 1) * section_w
+                    y1 = full_h if r == rows - 1 else (r + 1) * section_h
+                    
+                    # Recorta usando PIL
+                    section_img = full_img.crop((x0, y0, x1, y1))
+                    
+                    buffer = io.BytesIO()
+                    section_img.save(buffer, format="PNG")
+                    img_bytes = buffer.getvalue()
+                    img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+                    
+                    sections.append(PageImage(
+                        page_number=section_num,
+                        image_base64=img_base64,
+                        width=section_img.width,
+                        height=section_img.height
+                    ))
+            
+            return sections
             
         finally:
             doc.close()
