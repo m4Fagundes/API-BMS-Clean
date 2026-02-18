@@ -7,10 +7,11 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from src.core.security import verify_api_key
-from src.domain.models import ProjectReportRequest, BMSPointsRequest
+from src.domain.models import ProjectReportRequest, BMSPointsRequest, PIDAnalysisExportRequest
 from src.application.pdf_service import PdfReportService
 from src.application.excel_service import ExcelReportService
 from src.application.bms_excel_service import BMSExcelService
+from src.application.pid_excel_service import PIDExcelService
 
 
 logger = logging.getLogger("BMS_API")
@@ -86,3 +87,31 @@ async def generate_bms_points_excel(data: BMSPointsRequest):
     except Exception as e:
         logger.error(f"Erro ao gerar BMS Excel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pid-analysis-excel", dependencies=[Depends(verify_api_key)])
+async def generate_pid_analysis_excel(data: PIDAnalysisExportRequest):
+    """
+    Gera um Excel estruturado a partir dos resultados de análise de P&ID.
+
+    Recebe o array JSON produzido pela IA (com is_relevant_pid, components, summary)
+    e retorna um .xlsx com 3 abas:
+    - Points List: cada ponto individual por dispositivo
+    - Summary: totais por drawing (devices, AI, AO, DI, DO)
+    - All Pages: lista todas as páginas indicando quais são relevantes
+    """
+    try:
+        service = PIDExcelService()
+        excel_file = service.generate(data)
+
+        filename = f"{_sanitize_filename(data.project_name or 'PID_Analysis')}.xlsx"
+
+        return StreamingResponse(
+            excel_file,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.error(f"Erro ao gerar PID Analysis Excel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

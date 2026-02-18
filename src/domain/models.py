@@ -106,3 +106,39 @@ class ImagesToImagesResponse(BaseModel):
     """Resposta com múltiplas imagens."""
     total_pages: int
     images: List[PageImageResponse]
+
+
+# ==========================================
+#           MODELOS P&ID ANALYSIS EXPORT
+# ==========================================
+
+class PIDSummary(BaseModel):
+    """Resumo de contagem de pontos."""
+    total_devices: int = 0
+    total_points: int = 0
+    by_type: Optional[dict] = None
+
+
+class PIDComponent(BaseModel):
+    """Um dispositivo/componente encontrado no P&ID."""
+    tag: str
+    device_type: str
+    points: List[str] = []
+    point_count: int = 0
+    confidence: Optional[str] = "medium"
+
+
+class PIDPageResult(BaseModel):
+    """Resultado da análise de uma página P&ID."""
+    is_relevant_pid: bool
+    reasoning: Optional[str] = ""
+    drawing_title: Optional[str] = ""
+    drawing_number: Optional[str] = ""
+    components: Optional[List[PIDComponent]] = []
+    summary: Optional[PIDSummary] = None
+
+
+class PIDAnalysisExportRequest(BaseModel):
+    """Request para exportar resultados de análise P&ID para Excel."""
+    project_name: Optional[str] = "P&ID Analysis"
+    pages: List[PIDPageResult]
