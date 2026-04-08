@@ -11,6 +11,9 @@ from .models import (
     PagesToImagesRequest,
     PageImageResponse,
     ImagesToImagesResponse,
+    PointsListPoint,
+    PointsListSystem,
+    PointsListRequest,
 )
 
 __all__ = [
@@ -26,4 +29,7 @@ __all__ = [
     "PagesToImagesRequest",
     "PageImageResponse",
     "ImagesToImagesResponse",
+    "PointsListPoint",
+    "PointsListSystem",
+    "PointsListRequest",
 ]

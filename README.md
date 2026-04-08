@@ -1,34 +1,105 @@
-# BMS Spec Extractor & Generator API
+---
+created: 2026-04-08
+last_edited_date: 2026-04-08
+last_edited_by: Gemini AI
+tags:
+  - api
+  - bms
+  - power-automate
+  - points-list
+---
 
-## 📖 Overview
+# API-BMS-Clean: Backend for Points List Automation
 
-This is a **FastAPI** application designed to automate documentation workflows for Building Management Systems (BMS). It serves two main purposes:
-1.  **PDF Parsing:** Extracts text and specific sections from PDF specifications (uploaded as Base64 strings).
-2.  **Report Generation:** Generates professional PDF "Points List Schedules" with nested tables based on structured JSON data.
+**📖 Overview:** This FastAPI application serves as the **intelligent backend** for the [[Points_List_Generator]] Power Automate flow, automating extraction of mechanical specification data from PDFs and generating structured Excel/PDF reports for BMS projects.
 
-It is optimized for integration with automation tools like **Microsoft Power Automate**, Logic Apps, or custom Python scripts.
+## 🔗 Complete Documentation
 
-## 🛠️ Tech Stack
+For full architectural documentation, integration guides, and examples, see the **SetPoint skill documentation**:
 
-* **Python 3.8+**
-* **FastAPI:** High-performance web framework.
-* **PDFPlumber:** For robust text extraction from existing PDFs.
-* **ReportLab:** For programmatic generation of complex PDF layouts.
-* **Pydantic:** For strict data validation.
+📄 **[SKILL/SetPoint/SetPoint_README.md](../SKILL/SetPoint/SetPoint_README.md)**
 
-## 🚀 Installation
+## 🚀 Quick Start
 
-1.  **Clone the repository** or download the source code.
-2.  **Install dependencies**:
-    Create a `requirements.txt` file (or run directly):
-    ```bash
-    pip install fastapi uvicorn pdfplumber reportlab pydantic
-    ```
+### Installation
 
-## ⚙️ Configuration
+```bash
+cd API-BMS-Clean
+pip install fastapi uvicorn pdfplumber reportlab pydantic
+```
+
+### Running the API
+
+```bash
+python main.py
+# Access: http://127.0.0.1:8000/docs
+```
 
 ### Authentication
-The API is protected by a static API Key in the Header.
-* **Header Name:** `X-API-Key`
-* **Default Key:** `minha-chave-secreta-123`
-    * *Note: Update the `REAL_KEY` variable in `main.py` for production use.*
+
+```http
+POST /pdf/extract-toc
+Content-Type: application/json
+X-API-Key: xxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+## 🏗️ Architecture
+
+The API follows a **clean architecture** pattern:
+
+```
+src/
+├── core/           # Configuration & security
+├── domain/         # Data models (DTOs)
+├── application/    # Business logic services
+├── infrastructure/ # External implementations
+└── presentation/   # API routes
+```
+
+## 🔧 Key Endpoints
+
+### PDF Operations
+
+- `POST /pdf/extract-toc` - Extract table of contents
+- `POST /pdf/extract-section` - Extract specific section between text markers
+- `POST /pdf/upload-and-classify` - Upload + classify P&ID vs Layout pages
+- `GET /pdf/page/{session_id}/{page}` - Extract individual pages from cached PDF
+
+### Report Generation
+
+- `POST /reports/excel` - Generate structured Excel reports
+- `POST /reports/bms-points-excel` - BMS Points List format
+- `POST /reports/points-list-excel` - SetPoint standard Points List format
+
+## 📊 Data Models
+
+See `src/domain/models.py` for complete Pydantic models:
+
+1. **`PointsListRequest`** - Standard SetPoint Points List format
+2. **`BMSPointsRequest`** - BMS-specific points format
+3. **`PIDAnalysisExportRequest`** - P&ID analysis export
+
+## 🔒 Security
+
+### API Key Configuration
+
+```python
+# src/core/config.py
+api_key: str = "xxxxxxxxxxxxxxxxxxxxxxxxxxx"  # Change for production
+```
+
+> [!warning] Production Security
+> Always change the default API key in production environments.
+
+## 🤖 Integration with Power Automate
+
+This API is designed to work seamlessly with the **3-flow modular architecture** documented in [[PowerAutomate_Implementation_Strategy]]:
+
+1. **Flow 1:** Points List Generator (specification processing)
+2. **Flow 2:** Drawing Analyzer (P&ID/image analysis)
+3. **Flow 3:** Master Consolidator (intelligent data merging)
+
+---
+
+> [!note] Documentation Status
+> This README provides a quick reference. For complete documentation including **architecture diagrams**, **performance optimizations**, and **integration examples**, refer to the main SetPoint skill documentation.

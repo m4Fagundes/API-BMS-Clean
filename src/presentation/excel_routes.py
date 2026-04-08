@@ -7,11 +7,12 @@ from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from src.core.security import verify_api_key
-from src.domain.models import ProjectReportRequest, BMSPointsRequest, PIDAnalysisExportRequest
+from src.domain.models import ProjectReportRequest, BMSPointsRequest, PIDAnalysisExportRequest, PointsListRequest
 from src.application.pdf_service import PdfReportService
 from src.application.excel_service import ExcelReportService
 from src.application.bms_excel_service import BMSExcelService
 from src.application.pid_excel_service import PIDExcelService
+from src.application.points_list_excel_service import PointsListExcelService
 
 
 logger = logging.getLogger("BMS_API")
@@ -113,5 +114,35 @@ async def generate_pid_analysis_excel(data: PIDAnalysisExportRequest):
         )
     except Exception as e:
         logger.error(f"Erro ao gerar PID Analysis Excel: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/points-list-excel", dependencies=[Depends(verify_api_key)])
+async def generate_points_list_excel(data: PointsListRequest):
+    """
+    Gera um Excel no formato de Points List padrão.
+
+    Aceita o JSON gerado pela IA com a estrutura de sistemas e pontos e retorna
+    um .xlsx com layout estruturado:
+    - Linha de título do projeto
+    - Cabeçalho com colunas: AI, XI, DI, AO, XO, DO, KNX, Mod RTU, Mod IP,
+      BAC ms/tp, BAC IP (HLI), M-Bus (Pulse), Field Device, Qty
+    - Uma linha de seção por sistema/equipamento (fundo azul claro)
+    - Uma linha por ponto com ticks nas colunas de tipo correspondentes
+    - Linha de totais ao final
+    """
+    try:
+        service = PointsListExcelService()
+        excel_file = service.generate(data)
+
+        filename = f"{_sanitize_filename(data.project_name or 'Points_List')}.xlsx"
+
+        return StreamingResponse(
+            excel_file,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.error(f"Erro ao gerar Points List Excel: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

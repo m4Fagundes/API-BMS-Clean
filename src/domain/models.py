@@ -142,3 +142,30 @@ class PIDAnalysisExportRequest(BaseModel):
     """Request para exportar resultados de análise P&ID para Excel."""
     project_name: Optional[str] = "P&ID Analysis"
     pages: List[PIDPageResult]
+
+
+# ==========================================
+#   MODELOS POINTS LIST (genérico)
+# ==========================================
+
+class PointsListPoint(BaseModel):
+    """Um ponto individual com descrição, tipos de sinal, notas e quantidade."""
+    point_description: str
+    types: List[str] = []  # e.g. ["AI", "HLI"], ["DO"], ["Pulse"]
+    field_device_or_notes: Optional[str] = ""
+    qty: Optional[int] = 1
+
+
+class PointsListSystem(BaseModel):
+    """Um sistema/equipamento com seus pontos de monitoramento."""
+    system_name: str
+    equipment_tag: Optional[str] = ""
+    location: Optional[str] = ""
+    description: Optional[str] = ""
+    points: List[PointsListPoint] = []
+
+
+class PointsListRequest(BaseModel):
+    """Request para geração de Points List Excel (formato setpoint padrão)."""
+    project_name: Optional[str] = "Unknown"
+    systems: List[PointsListSystem] = []
